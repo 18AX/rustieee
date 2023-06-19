@@ -8,9 +8,13 @@ use composer::Composer;
 use error::Error;
 use parser::Parser;
 
+pub mod address;
 pub mod composer;
 pub mod error;
 pub mod parser;
+
+#[cfg(feature = "ieee802154")]
+pub mod ieee802154;
 
 pub fn parse<'a, P: Parser<'a>>(raw: &'a [u8]) -> Result<P::Value, Error> {
     Ok(P::parse(raw)?)

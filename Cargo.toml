@@ -5,6 +5,7 @@ edition = "2021"
 
 [features]
 ufmt = ["dep:ufmt"]
+ieee802154 = []
 
 [dependencies]
 thiserror-no-std = "2.0.2"
