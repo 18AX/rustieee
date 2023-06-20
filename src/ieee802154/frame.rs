@@ -84,6 +84,13 @@ pub struct MacHeader {
 #[derive(Debug, Clone)]
 pub struct StandardControlField {
     frame_kind: FrameKind,
+    security_enabled: bool,
+    frame_pending: bool,
+    ack_required: bool,
+    pan_id_compression: bool,
+    seq_no_present: bool,
+    ie_present: bool,
+    version: FrameVersion,
 }
 
 /// Control field. Common for all frame type except multipurpose frame,
@@ -93,6 +100,91 @@ pub struct StandardControlField {
 #[derive(Debug, Clone)]
 pub enum ControlField {
     Standard(StandardControlField),
+}
+
+/// Frame version. field not present for fragment frame and extended frame.
+/// Chapter 7.2.2.10
+#[cfg_attr(feature = "ufmt", derive(ufmt::derive::uDebug))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameVersion {
+    Ieee802154_2003,
+    Ieee802154_2006,
+    Ieee802154,
+}
+
+const IEEE_2003_STD_VALUE: u8 = 0x0;
+const IEEE_2006_STD_VALUE: u8 = 0x1;
+const IEEE_STD_VALUE: u8 = 0x02;
+const IEEE_MULTIPURPOSE_VALUE: u8 = 0x0;
+
+impl FrameVersion {
+    const fn from_byte_std(value: u8) -> Result<Self, crate::parser::Error> {
+        match value {
+            IEEE_2003_STD_VALUE => Ok(FrameVersion::Ieee802154_2003),
+            IEEE_2006_STD_VALUE => Ok(FrameVersion::Ieee802154_2006),
+            IEEE_STD_VALUE => Ok(FrameVersion::Ieee802154),
+            _ => Err(crate::parser::Error::InvalidHeader),
+        }
+    }
+
+    const fn from_byte_multipurpose(value: u8) -> Result<Self, crate::parser::Error> {
+        match value {
+            IEEE_MULTIPURPOSE_VALUE => Ok(FrameVersion::Ieee802154),
+            _ => Err(crate::parser::Error::InvalidHeader),
+        }
+    }
+
+    /// Returns [`FrameVersion`] depending on the value.
+    ///
+    /// The frame kind is needed because the frame version bits change
+    /// according to the frame type.
+    ///
+    /// # Error
+    ///
+    /// If the value is invalid or the frame type does not have a version
+    /// field, returns `InvalidHeader`.
+    pub const fn from_byte(kind: FrameKind, value: u8) -> Result<Self, crate::parser::Error> {
+        match kind {
+            FrameKind::Beacon
+            | FrameKind::Data
+            | FrameKind::Acknowledgment
+            | FrameKind::MacCommand => Self::from_byte_std(value),
+            FrameKind::MultiPurpose => Self::from_byte_multipurpose(value),
+            _ => Err(crate::parser::Error::InvalidHeader),
+        }
+    }
+
+    const fn bits_std(&self) -> u8 {
+        match self {
+            FrameVersion::Ieee802154_2003 => IEEE_2003_STD_VALUE,
+            FrameVersion::Ieee802154_2006 => IEEE_2006_STD_VALUE,
+            FrameVersion::Ieee802154 => IEEE_STD_VALUE,
+        }
+    }
+
+    const fn bits_multipurpose(&self) -> Result<u8, crate::composer::Error> {
+        match self {
+            FrameVersion::Ieee802154 => Ok(IEEE_MULTIPURPOSE_VALUE),
+            _ => Err(crate::composer::Error::InvalidHeader),
+        }
+    }
+
+    /// Returns bits associated with the version.
+    ///
+    /// # Errors
+    ///
+    /// If the frame kind does not contain the version provided, an error is
+    /// returned.
+    pub const fn bits(&self, kind: FrameKind) -> Result<u8, crate::composer::Error> {
+        match kind {
+            FrameKind::Beacon
+            | FrameKind::Data
+            | FrameKind::Acknowledgment
+            | FrameKind::MacCommand => Ok(self.bits_std()),
+            FrameKind::MultiPurpose => self.bits_multipurpose(),
+            _ => Err(crate::composer::Error::InvalidHeader),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -138,6 +230,104 @@ mod tests {
         assert!(matches!(
             FrameKind::from_byte(0xA),
             Err(crate::parser::Error::InvalidHeader)
+        ));
+    }
+
+    #[test]
+    fn frame_version_from_byte_valid_values() {
+        assert_eq!(
+            FrameVersion::Ieee802154_2003,
+            FrameVersion::from_byte(FrameKind::Beacon, IEEE_2003_STD_VALUE).unwrap()
+        );
+        assert_eq!(
+            FrameVersion::Ieee802154_2006,
+            FrameVersion::from_byte(FrameKind::Data, IEEE_2006_STD_VALUE).unwrap()
+        );
+        assert_eq!(
+            FrameVersion::Ieee802154,
+            FrameVersion::from_byte(FrameKind::Acknowledgment, IEEE_STD_VALUE).unwrap()
+        );
+        assert_eq!(
+            FrameVersion::Ieee802154,
+            FrameVersion::from_byte(FrameKind::MacCommand, IEEE_STD_VALUE).unwrap()
+        );
+        assert_eq!(
+            FrameVersion::Ieee802154,
+            FrameVersion::from_byte(FrameKind::MultiPurpose, IEEE_MULTIPURPOSE_VALUE).unwrap()
+        );
+    }
+
+    #[test]
+    fn frame_version_from_byte_invalid_values() {
+        assert!(matches!(
+            FrameVersion::from_byte(FrameKind::Frak, IEEE_2003_STD_VALUE),
+            Err(crate::parser::Error::InvalidHeader)
+        ));
+        assert!(matches!(
+            FrameVersion::from_byte(FrameKind::Extended, IEEE_STD_VALUE),
+            Err(crate::parser::Error::InvalidHeader)
+        ));
+        assert!(matches!(
+            FrameVersion::from_byte(FrameKind::MultiPurpose, IEEE_STD_VALUE),
+            Err(crate::parser::Error::InvalidHeader)
+        ));
+        assert!(matches!(
+            FrameVersion::from_byte(FrameKind::MultiPurpose, IEEE_2006_STD_VALUE),
+            Err(crate::parser::Error::InvalidHeader)
+        ));
+        assert!(matches!(
+            FrameVersion::from_byte(FrameKind::Beacon, 0x4),
+            Err(crate::parser::Error::InvalidHeader)
+        ));
+    }
+
+    #[test]
+    fn frame_version_bits_valid_values() {
+        assert_eq!(
+            FrameVersion::Ieee802154.bits(FrameKind::Beacon).unwrap(),
+            IEEE_STD_VALUE
+        );
+        assert_eq!(
+            FrameVersion::Ieee802154_2003
+                .bits(FrameKind::Acknowledgment)
+                .unwrap(),
+            IEEE_2003_STD_VALUE
+        );
+        assert_eq!(
+            FrameVersion::Ieee802154_2006.bits(FrameKind::Data).unwrap(),
+            IEEE_2006_STD_VALUE
+        );
+        assert_eq!(
+            FrameVersion::Ieee802154
+                .bits(FrameKind::MacCommand)
+                .unwrap(),
+            IEEE_STD_VALUE
+        );
+        assert_eq!(
+            FrameVersion::Ieee802154
+                .bits(FrameKind::MultiPurpose)
+                .unwrap(),
+            IEEE_MULTIPURPOSE_VALUE
+        );
+    }
+
+    #[test]
+    fn frame_version_bits_invalid_values() {
+        assert!(matches!(
+            FrameVersion::Ieee802154.bits(FrameKind::Frak),
+            Err(crate::composer::Error::InvalidHeader)
+        ));
+        assert!(matches!(
+            FrameVersion::Ieee802154.bits(FrameKind::Extended),
+            Err(crate::composer::Error::InvalidHeader)
+        ));
+        assert!(matches!(
+            FrameVersion::Ieee802154_2003.bits(FrameKind::MultiPurpose),
+            Err(crate::composer::Error::InvalidHeader)
+        ));
+        assert!(matches!(
+            FrameVersion::Ieee802154_2006.bits(FrameKind::MultiPurpose),
+            Err(crate::composer::Error::InvalidHeader)
         ));
     }
 }
