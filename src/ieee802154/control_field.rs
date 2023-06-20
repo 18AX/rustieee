@@ -1,4 +1,15 @@
-use super::address::AddressKind;
+#[cfg_attr(feature = "ufmt", derive(ufmt::derive::uDebug))]
+#[derive(Debug, Clone)]
+pub struct StandardControlField {
+    frame_kind: FrameKind,
+    security_enabled: bool,
+    frame_pending: bool,
+    ack_required: bool,
+    pan_id_compression: bool,
+    seq_no_present: bool,
+    ie_present: bool,
+    version: FrameVersion,
+}
 
 const BEACON_VALUE: u8 = 0x0;
 const DATA_VALUE: u8 = 0x1;
@@ -61,45 +72,6 @@ impl TryFrom<u8> for FrameKind {
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         FrameKind::from_byte(value)
     }
-}
-
-/// General frame
-#[cfg_attr(feature = "ufmt", derive(ufmt::derive::uDebug))]
-#[derive(Debug, Clone)]
-pub struct Frame<'a> {
-    pub header: MacHeader,
-    pub payload: &'a [u8],
-}
-
-/// MAC Header (MHR) of a frame
-#[cfg_attr(feature = "ufmt", derive(ufmt::derive::uDebug))]
-#[derive(Debug, Clone)]
-pub struct MacHeader {
-    pub control_field: ControlField,
-    pub src_addr: Option<AddressKind>,
-    pub dst_addr: Option<AddressKind>,
-}
-
-#[cfg_attr(feature = "ufmt", derive(ufmt::derive::uDebug))]
-#[derive(Debug, Clone)]
-pub struct StandardControlField {
-    frame_kind: FrameKind,
-    security_enabled: bool,
-    frame_pending: bool,
-    ack_required: bool,
-    pan_id_compression: bool,
-    seq_no_present: bool,
-    ie_present: bool,
-    version: FrameVersion,
-}
-
-/// Control field. Common for all frame type except multipurpose frame,
-/// fragment frame and extended frame.
-/// Chapter 7.2.2
-#[cfg_attr(feature = "ufmt", derive(ufmt::derive::uDebug))]
-#[derive(Debug, Clone)]
-pub enum ControlField {
-    Standard(StandardControlField),
 }
 
 /// Frame version. field not present for fragment frame and extended frame.
@@ -189,7 +161,7 @@ impl FrameVersion {
 
 #[cfg(test)]
 mod tests {
-    use crate::ieee802154::frame::*;
+    use crate::ieee802154::control_field::*;
 
     #[test]
     fn frame_kind_from_byte_valid_values() {
