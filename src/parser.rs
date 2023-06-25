@@ -5,6 +5,8 @@ use thiserror_no_std::Error;
 pub enum Error {
     #[error("Invalid header")]
     InvalidHeader,
+    #[error("Invalid payload")]
+    InvalidPayload,
 }
 
 pub trait Parser<'a> {

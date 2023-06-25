@@ -3,6 +3,8 @@ use crate::ieee802154::{
     security_header::AuxiliarySecurityHeader,
 };
 
+use self::gts::Gts;
+
 mod offset {
     pub(crate) const BEACON_ORDER: usize = 0;
     pub(crate) const SUPER_FRAME_ORDER: usize = 4;
@@ -44,7 +46,8 @@ pub struct BeaconHeader {
 #[derive(Debug, Clone)]
 pub struct BeaconPayload<'a> {
     pub super_frame: SuperFrame,
-    // TODO: add GTS and Pending address
+    pub gts: Gts,
+    // TODO: add pending address
     pub data: &'a [u8],
 }
 
@@ -92,6 +95,191 @@ impl SuperFrame {
             .to_le_bytes()
     }
 }
+
+pub mod gts {
+
+    #[cfg(feature = "ufmt")]
+    use ufmt::uwrite;
+
+    use crate::ieee802154::address::{PanId, ShortAddress};
+
+    pub mod offset {
+        pub const GTS_DESCRIPTOR_COUNT: usize = 0;
+        pub const GTS_PERMIT: usize = 0x7;
+        pub const GTS_STARTING_SLOT: usize = 0;
+        pub const GTS_DESC_LENGTH: usize = 3;
+    }
+
+    pub mod mask {
+        use super::offset;
+
+        pub const GTS_DESCRIPTOR_COUNT: u8 = 0x7 << offset::GTS_DESCRIPTOR_COUNT;
+        pub const GTS_PERMIT: u8 = 0x1 << offset::GTS_PERMIT;
+        pub const GTS_DIRECTION: u8 = 0x7F;
+        pub const GTS_STARTING_SLOT: u8 = 0xF << offset::GTS_STARTING_SLOT;
+        pub const GTS_DESC_LENGTH: u8 = 0xF << offset::GTS_DESC_LENGTH;
+    }
+
+    pub const MAX_GTS_DESCRIPTOR: usize = 0x7;
+    /// GTS descriptor size in bytes
+    pub(crate) const GTS_DESCRIPTOR_SIZE: usize = 0x3;
+
+    #[derive(Debug, Clone)]
+    pub struct Gts {
+        pub permit: bool,
+        /// Coordinator accepting GTS request
+        pub descriptors: heapless::Vec<GtsDescriptor, MAX_GTS_DESCRIPTOR>,
+    }
+
+    #[cfg(feature = "ufmt")]
+    impl ufmt::uDebug for Gts {
+        fn fmt<W>(&self, f: &mut ufmt::Formatter<'_, W>) -> Result<(), W::Error>
+        where
+            W: ufmt::uWrite + ?Sized,
+        {
+            uwrite!(f, "Gts {{ permit: {} descriptors: [ ", self.permit)?;
+
+            for desc in &self.descriptors {
+                uwrite!(f, "{:?} ", desc)?;
+            }
+
+            uwrite!(f, "] }}")
+        }
+    }
+
+    impl Gts {
+        pub fn from_bytes(pan: PanId, data: &[u8]) -> Result<Self, crate::parser::Error> {
+            if data.is_empty() {
+                return Err(crate::parser::Error::InvalidPayload);
+            }
+
+            let gts_spec: u8 = data[0];
+
+            let desciptor_count: usize =
+                ((gts_spec & mask::GTS_DESCRIPTOR_COUNT) >> offset::GTS_DESCRIPTOR_COUNT).into();
+            let permit: bool = gts_spec & mask::GTS_PERMIT != 0;
+            let mut descriptors = heapless::Vec::new();
+
+            if desciptor_count != 0 {
+                // GTS Spec + GTS direction + GTS list
+                if desciptor_count * GTS_DESCRIPTOR_SIZE + 2 < data.len() {
+                    return Err(crate::parser::Error::InvalidPayload);
+                }
+
+                let gts_direction: u8 = data[1] & mask::GTS_DIRECTION;
+
+                for i in 0..desciptor_count {
+                    let index = GTS_DESCRIPTOR_SIZE * i + 2;
+                    let gts_desc_info: u8 = data[index + 2];
+                    unsafe {
+                        descriptors.push_unchecked(GtsDescriptor {
+                            address: ShortAddress::new(
+                                pan,
+                                u16::from_le_bytes([data[index], data[index + 1]]),
+                            ),
+                            starting_slot: gts_desc_info & mask::GTS_STARTING_SLOT,
+                            length: (gts_desc_info & mask::GTS_DESC_LENGTH)
+                                >> offset::GTS_DESC_LENGTH,
+                            direction: GtsDirection::from_bit((gts_direction & (0x1 << i)) != 0),
+                        })
+                    }
+                }
+            }
+
+            Ok(Gts {
+                permit,
+                descriptors,
+            })
+        }
+    }
+
+    #[cfg_attr(feature = "ufmt", derive(ufmt::derive::uDebug))]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum GtsDirection {
+        Receive,
+        Transmit,
+    }
+
+    impl From<bool> for GtsDirection {
+        fn from(value: bool) -> Self {
+            GtsDirection::from_bit(value)
+        }
+    }
+
+    impl GtsDirection {
+        fn from_bit(value: bool) -> Self {
+            match value {
+                true => GtsDirection::Receive,
+                false => GtsDirection::Transmit,
+            }
+        }
+    }
+
+    /// Format of a GTS descriptor.
+    /// Figure 7-11
+    #[cfg_attr(feature = "ufmt", derive(ufmt::derive::uDebug))]
+    #[derive(Debug, Clone)]
+    pub struct GtsDescriptor {
+        pub address: ShortAddress,
+        pub starting_slot: u8,
+        pub length: u8,
+        pub direction: GtsDirection,
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use crate::{
+            address::Address,
+            ieee802154::{
+                address::{PanId, ShortAddress},
+                frame::beacon::gts::GtsDirection,
+            },
+        };
+
+        use super::Gts;
+
+        #[test]
+        fn from_bytes_zero_gts_descriptors() {
+            let payload = [0x0];
+
+            let gts = Gts::from_bytes(PanId::broadcast(), &payload).unwrap();
+
+            assert_eq!(gts.permit, false);
+            assert_eq!(gts.descriptors.len(), 0);
+        }
+
+        #[test]
+        fn from_bytes_max_gts_descriptors() {
+            let payload: [u8; 23] = [
+                0x87, 0xF0, 0xAB, 0xCD, 0xFA, 0xAB, 0xCD, 0xFA, 0xAB, 0xCD, 0xFA, 0xAB, 0xCD, 0xFA,
+                0xAB, 0xCD, 0xFA, 0xAB, 0xCD, 0xFA, 0xAB, 0xCD, 0xFA,
+            ];
+
+            let gts = Gts::from_bytes(PanId::broadcast(), &payload).unwrap();
+
+            assert_eq!(gts.permit, true);
+            assert_eq!(gts.descriptors.len(), 7);
+
+            for i in 0..7 {
+                let desc = &gts.descriptors[i];
+                assert_eq!(desc.address, ShortAddress::new(PanId::broadcast(), 0xCDAB));
+
+                let direction = match i > 7 / 2 {
+                    true => GtsDirection::Receive,
+                    false => GtsDirection::Transmit,
+                };
+
+                assert_eq!(desc.direction, direction);
+                assert_eq!(desc.starting_slot, 0xA);
+                assert_eq!(desc.length, 0xF);
+            }
+        }
+    }
+}
+
+#[cfg_attr(feature = "ufmt", derive(ufmt::derive::uDebug))]
+#[derive(Debug, Clone)]
+pub struct PendingAddress {}
 
 #[cfg(test)]
 mod tests {
